@@ -138,86 +138,119 @@ def get_topic_info(url, topic_id=None):
     logger.info(f"Found topic: '{topic_title}' (ID: {topic_id})")
     return topic_title, topic_id, topic_slug, final_url
 
-def create_feed_for_topic(topic_url, topic_id=None):
-    """Create an RSS feed for entries in an Ekşi Sözlük topic"""
+def create_feed_for_topic(topic_url, topic_id=None, max_pages=3):
+    """Create an RSS feed for entries in an Ekşi Sözlük topic with pagination and correct timezone"""
+    # First get the topic info without date parameter
     topic_title, topic_id, topic_slug, final_url = get_topic_info(topic_url, topic_id)
     
     if not topic_title or not topic_id:
         logger.error(f"Failed to get topic info for {topic_url}")
         return None
     
-    # Fetch the page
-    response = fetch_eksi_page(final_url)
-    if not response:
-        return None
-    
-    # Parse the HTML
-    soup = BeautifulSoup(response.text, 'html.parser')
-    
     # Create feed
     fg = FeedGenerator()
     fg.id(final_url)
-    fg.title(f'Ekşi Sözlük - {topic_title}')
+    fg.title(f'Ekşi - {topic_title}')
     fg.link(href=final_url, rel='alternate')
     fg.description(f'New entries for topic: {topic_title}')
     fg.language('tr')
     
-    # Add feed level publication date (with timezone)
-    fg.pubDate(datetime.datetime.now(pytz.UTC))
+    # Add feed level publication date (with Turkish timezone)
+    istanbul_tz = pytz.timezone('Europe/Istanbul')
+    fg.pubDate(datetime.datetime.now(istanbul_tz))
     
-    # Extract entries
-    entries = soup.select('ul#entry-item-list > li')
-    logger.info(f"Found {len(entries)} entries on the current page for topic: {topic_title}")
+    # Append today's date parameter to the URL
+    today = datetime.datetime.now().strftime('%Y-%m-%d')
     
-    for entry in entries:
-        try:
-            entry_id = entry.get('data-id')
-            if not entry_id:
-                continue
-                
-            author = entry.get('data-author')
-            content_element = entry.select_one('div.content')
-            if not content_element:
-                continue
-                
-            content = content_element.decode_contents()
-            date_element = entry.select_one('div.info a.entry-date')
-            if not date_element:
-                continue
-                
-            date_text = date_element.get_text(strip=True)
-            permalink = date_element.get('href')
-            
-            # Create entry in feed
-            fe = fg.add_entry()
-            fe.id(f'https://eksisozluk.com{permalink}')
-            
-            # Use just the author name as the title
-            fe.title(author)
-            
-            fe.link(href=f'https://eksisozluk.com{permalink}')
-            fe.author(name=author)
-            fe.content(content, type='html')
-            
-            # Parse date and make it timezone-aware
-            date_match = re.search(r'(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2})', date_text)
-            if date_match:
-                date_str = date_match.group(1)
-                try:
-                    # Parse date and make it timezone-aware by attaching UTC timezone
-                    entry_date = datetime.datetime.strptime(date_str, '%d.%m.%Y %H:%M')
-                    entry_date = entry_date.replace(tzinfo=pytz.UTC)
-                    fe.published(entry_date)
-                except ValueError as e:
-                    logger.warning(f"Error parsing date '{date_str}': {e}")
-                    # Use current time with timezone info
-                    fe.published(datetime.datetime.now(pytz.UTC))
-            else:
-                # Use current time with timezone info
-                fe.published(datetime.datetime.now(pytz.UTC))
-        except Exception as e:
-            logger.error(f"Error processing entry: {e}")
+    # Process multiple pages
+    entries_added = 0
     
+    for page in range(1, max_pages + 1):
+        # Construct URL with date and page parameters
+        if '?' in final_url:
+            page_url = f"{final_url}&day={today}"
+        else:
+            page_url = f"{final_url}?day={today}"
+            
+        # Add page parameter if not the first page
+        if page > 1:
+            page_url = f"{page_url}&p={page}"
+        
+        logger.info(f"Fetching page {page} with date parameter: {page_url}")
+        
+        # Fetch the page with the date parameter
+        response = fetch_eksi_page(page_url)
+        if not response:
+            break
+        
+        # Parse the HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract entries
+        entries = soup.select('ul#entry-item-list > li')
+        if not entries:
+            # No more entries found, stop pagination
+            break
+            
+        logger.info(f"Found {len(entries)} entries on page {page} for topic: {topic_title}")
+        
+        for entry in entries:
+            try:
+                entry_id = entry.get('data-id')
+                if not entry_id:
+                    continue
+                    
+                author = entry.get('data-author')
+                content_element = entry.select_one('div.content')
+                if not content_element:
+                    continue
+                    
+                content = content_element.decode_contents()
+                date_element = entry.select_one('div.info a.entry-date')
+                if not date_element:
+                    continue
+                    
+                date_text = date_element.get_text(strip=True)
+                permalink = date_element.get('href')
+                
+                # Create entry in feed
+                fe = fg.add_entry()
+                fe.id(f'https://eksisozluk.com{permalink}')
+                
+                # Use just the author name as the title
+                fe.title(author)
+                
+                fe.link(href=f'https://eksisozluk.com{permalink}')
+                fe.author(name=author)
+                fe.content(content, type='html')
+                
+                # Parse date and make it timezone-aware with Turkish timezone
+                date_match = re.search(r'(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2})', date_text)
+                if date_match:
+                    date_str = date_match.group(1)
+                    try:
+                        # Parse date and make it timezone-aware with Turkish timezone
+                        entry_date = datetime.datetime.strptime(date_str, '%d.%m.%Y %H:%M')
+                        entry_date = istanbul_tz.localize(entry_date)
+                        fe.published(entry_date)
+                    except ValueError as e:
+                        logger.warning(f"Error parsing date '{date_str}': {e}")
+                        # Use current time with Turkish timezone
+                        fe.published(datetime.datetime.now(istanbul_tz))
+                else:
+                    # Use current time with Turkish timezone
+                    fe.published(datetime.datetime.now(istanbul_tz))
+                
+                entries_added += 1
+            except Exception as e:
+                logger.error(f"Error processing entry: {e}")
+        
+        # Check if we should continue to the next page
+        # If this page had fewer entries than expected, don't fetch more pages
+        if len(entries) < 10:  # Assuming each page has around 10 entries
+            break
+    
+    logger.info(f"Added {entries_added} entries in total for topic: {topic_title}")
     return fg
 
 @app.route('/')
@@ -282,8 +315,8 @@ def feed_by_id(topic_id):
     if not topic_url:
         topic_url = f"https://eksisozluk.com/baslik/{topic_id}"
     
-    # Create feed
-    fg = create_feed_for_topic(topic_url, topic_id)
+    # Create feed with pagination (get up to 3 pages)
+    fg = create_feed_for_topic(topic_url, topic_id, max_pages=3)
     
     if not fg:
         return "Failed to generate feed", 500
@@ -318,7 +351,7 @@ def all_feeds():
     # Create combined feed
     fg = FeedGenerator()
     fg.id(request.url)
-    fg.title('Ekşi Sözlük - All Subscribed Topics')
+    fg.title('Ekşi - All Subscribed Topics')
     fg.link(href=request.url, rel='self')
     fg.description('Combined feed of all subscribed Ekşi Sözlük topics')
     fg.language('tr')
@@ -445,4 +478,4 @@ if __name__ == '__main__':
     create_template_files()
     
     # Run the app
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)
