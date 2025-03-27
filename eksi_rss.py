@@ -87,14 +87,15 @@ def fetch_eksi_page(url):
         logger.info(f"Fetching URL: {url}")
         # Create a new session and fetch the page
         response = scraper.get(url, allow_redirects=True)
-        response.raise_for_status()
+        response.raise_for_status()  # This will raise an exception for 4XX/5XX responses
         
         # Return the response
         return response
     except Exception as e:
         logger.error(f"Error fetching page {url}: {e}")
-        return None
-
+        # Re-raise the exception so the caller can handle it
+        raise
+    
 def get_topic_info(url, topic_id=None):
     """Get topic information and handle redirects"""
     response = fetch_eksi_page(url)
@@ -150,7 +151,7 @@ def create_feed_for_topic(topic_url, topic_id=None, max_pages=3):
     # Create feed
     fg = FeedGenerator()
     fg.id(final_url)
-    fg.title(f'Ekşi - {topic_title}')
+    fg.title(f'Ekşi Sözlük - {topic_title}')
     fg.link(href=final_url, rel='alternate')
     fg.description(f'New entries for topic: {topic_title}')
     fg.language('tr')
@@ -164,23 +165,50 @@ def create_feed_for_topic(topic_url, topic_id=None, max_pages=3):
     
     # Process multiple pages
     entries_added = 0
+    use_date_param = True  # Flag to determine if we should use date parameter
     
     for page in range(1, max_pages + 1):
         # Construct URL with date and page parameters
-        if '?' in final_url:
-            page_url = f"{final_url}&day={today}"
-        else:
-            page_url = f"{final_url}?day={today}"
+        if use_date_param:
+            if '?' in final_url:
+                page_url = f"{final_url}&day={today}"
+            else:
+                page_url = f"{final_url}?day={today}"
+                
+            # Add page parameter if not the first page
+            if page > 1:
+                page_url = f"{page_url}&p={page}"
             
-        # Add page parameter if not the first page
-        if page > 1:
-            page_url = f"{page_url}&p={page}"
+            logger.info(f"Fetching page {page} with date parameter: {page_url}")
+        else:
+            # Use the URL without date parameter if there were no entries for today
+            page_url = final_url
+            if page > 1:
+                if '?' in page_url:
+                    page_url = f"{page_url}&p={page}"
+                else:
+                    page_url = f"{page_url}?p={page}"
+            logger.info(f"Fetching page {page} without date parameter: {page_url}")
         
-        logger.info(f"Fetching page {page} with date parameter: {page_url}")
-        
-        # Fetch the page with the date parameter
-        response = fetch_eksi_page(page_url)
-        if not response:
+        # Fetch the page
+        try:
+            response = fetch_eksi_page(page_url)
+            if not response:
+                if use_date_param and page == 1:
+                    # If first attempt with date parameter fails, try without date
+                    logger.info("No entries found for today, falling back to most recent entries")
+                    use_date_param = False
+                    page = 0  # Reset page counter to try again from page 1
+                    continue
+                break
+        except Exception as e:
+            if use_date_param and page == 1:
+                # If first attempt with date parameter fails, try without date
+                logger.info(f"No entries found for today ({e}), falling back to most recent entries")
+                use_date_param = False
+                page = 0  # Reset page counter to try again from page 1
+                continue
+            logger.error(f"Error fetching page: {e}")
             break
         
         # Parse the HTML
@@ -190,10 +218,17 @@ def create_feed_for_topic(topic_url, topic_id=None, max_pages=3):
         entries = soup.select('ul#entry-item-list > li')
         if not entries:
             # No more entries found, stop pagination
+            if use_date_param and page == 1:
+                # If first attempt with date parameter returns no entries, try without date
+                logger.info("No entries found for today, falling back to most recent entries")
+                use_date_param = False
+                page = 0  # Reset page counter to try again from page 1
+                continue
             break
             
         logger.info(f"Found {len(entries)} entries on page {page} for topic: {topic_title}")
         
+        # Process entries (rest of the code remains the same)
         for entry in entries:
             try:
                 entry_id = entry.get('data-id')
@@ -244,7 +279,7 @@ def create_feed_for_topic(topic_url, topic_id=None, max_pages=3):
                 entries_added += 1
             except Exception as e:
                 logger.error(f"Error processing entry: {e}")
-        
+                
         # Check if we should continue to the next page
         # If this page had fewer entries than expected, don't fetch more pages
         if len(entries) < 10:  # Assuming each page has around 10 entries
