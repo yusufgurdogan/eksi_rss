@@ -14,8 +14,8 @@ Bu uygulama, Ekşi Sözlük başlıklarını takip etmek için bir RSS servisi s
 
 1. Repo'yu klonlayın:
 ```
-git clone https://github.com/kullanici/eksi-rss-servisi.git
-cd eksi-rss-servisi
+git clone https://github.com/yusufgurdogan/eksi_rss.git
+cd eksi_rss
 ```
 
 2. Sanal ortam oluşturun ve etkinleştirin:
