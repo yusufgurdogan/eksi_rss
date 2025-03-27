@@ -12,7 +12,7 @@ import logging
 from urllib.parse import quote
 from flask_caching import Cache
 
-# Configure logging
+# Günlük kaydını yapılandır
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -20,60 +20,60 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+uygulama = Flask(__name__)
 
-# Configure cache
-cache_config = {
+# Önbelleği yapılandır
+onbellek_ayarlari = {
     "DEBUG": True,
     "CACHE_TYPE": "SimpleCache",
-    "CACHE_DEFAULT_TIMEOUT": 900  # 15 minutes
+    "CACHE_DEFAULT_TIMEOUT": 900  # 15 dakika
 }
-app.config.from_mapping(cache_config)
-cache = Cache(app)
+uygulama.config.from_mapping(onbellek_ayarlari)
+onbellek = Cache(uygulama)
 
-# Data file for subscribed topics
-SUBSCRIPTIONS_FILE = 'subscriptions.json'
+# Abone olunan başlıklar için veri dosyası
+ABONELIKLER_DOSYASI = 'abonelikler.json'
 
-def load_subscriptions():
-    """Load the list of subscribed topics from file"""
-    if os.path.exists(SUBSCRIPTIONS_FILE):
-        with open(SUBSCRIPTIONS_FILE, 'r', encoding='utf-8') as f:
+def abonelikleri_yukle():
+    """Abone olunan başlıkların listesini dosyadan yükle"""
+    if os.path.exists(ABONELIKLER_DOSYASI):
+        with open(ABONELIKLER_DOSYASI, 'r', encoding='utf-8') as f:
             return json.load(f)
     return []
 
-def save_subscriptions(subscriptions):
-    """Save the list of subscribed topics to file"""
-    with open(SUBSCRIPTIONS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(subscriptions, f, ensure_ascii=False, indent=2)
+def abonelikleri_kaydet(abonelikler):
+    """Abone olunan başlıkların listesini dosyaya kaydet"""
+    with open(ABONELIKLER_DOSYASI, 'w', encoding='utf-8') as f:
+        json.dump(abonelikler, f, ensure_ascii=False, indent=2)
 
-def parse_topic_url(input_str):
-    """Parse different input formats to get a valid Ekşi Sözlük topic URL and ID"""
-    # If it's a full URL
-    if input_str.startswith('http'):
-        # Extract topic ID if present
-        match = re.search(r'--(\d+)', input_str)
-        if match:
-            topic_id = match.group(1)
-            return input_str, topic_id
-        return input_str, None
+def baslik_url_ayrıstir(girdi):
+    """Farklı giriş formatlarını ayrıştırarak geçerli bir Ekşi Sözlük başlık URL'si ve ID'si al"""
+    # Tam URL ise
+    if girdi.startswith('http'):
+        # Varsa başlık ID'sini çıkar
+        eslesme = re.search(r'--(\d+)', girdi)
+        if eslesme:
+            baslik_id = eslesme.group(1)
+            return girdi, baslik_id
+        return girdi, None
     
-    # If it's just a numeric ID
-    if input_str.isdigit():
-        return f"https://eksisozluk.com/baslik/{input_str}", input_str
+    # Sadece sayısal ID ise
+    if girdi.isdigit():
+        return f"https://eksisozluk.com/baslik/{girdi}", girdi
     
-    # If it's a slug with ID
-    match = re.search(r'--(\d+)', input_str)
-    if match:
-        topic_id = match.group(1)
-        return f"https://eksisozluk.com/{input_str}", topic_id
+    # ID'li bir slug ise
+    eslesme = re.search(r'--(\d+)', girdi)
+    if eslesme:
+        baslik_id = eslesme.group(1)
+        return f"https://eksisozluk.com/{girdi}", baslik_id
     
-    # Otherwise, assume it's a search term
-    encoded_term = quote(input_str)
-    return f"https://eksisozluk.com/?q={encoded_term}", None
+    # Diğer durumlarda, arama terimi olduğunu varsay
+    kodlanmis_terim = quote(girdi)
+    return f"https://eksisozluk.com/?q={kodlanmis_terim}", None
 
-@cache.memoize(timeout=900)  # Cache for 15 minutes
-def fetch_eksi_page(url):
-    """Fetch an Ekşi Sözlük page with cloudscraper"""
+@onbellek.memoize(timeout=900)  # 15 dakika için önbellekte tut
+def eksi_sayfasi_al(url):
+    """Cloudscraper ile bir Ekşi Sözlük sayfasını al"""
     scraper = cloudscraper.create_scraper(
         browser={
             'browser': 'chrome',
@@ -84,343 +84,334 @@ def fetch_eksi_page(url):
     )
     
     try:
-        logger.info(f"Fetching URL: {url}")
-        # Create a new session and fetch the page
-        response = scraper.get(url, allow_redirects=True)
-        response.raise_for_status()  # This will raise an exception for 4XX/5XX responses
+        logger.info(f"URL alınıyor: {url}")
+        # Yeni bir oturum oluştur ve sayfayı al
+        yanit = scraper.get(url, allow_redirects=True)
+        yanit.raise_for_status()  # 4XX/5XX yanıtları için bir istisna fırlatır
         
-        # Return the response
-        return response
+        # Yanıtı döndür
+        return yanit
     except Exception as e:
-        logger.error(f"Error fetching page {url}: {e}")
-        # Re-raise the exception so the caller can handle it
+        logger.error(f"Sayfa alınırken hata oluştu {url}: {e}")
+        # Çağıranın işleyebilmesi için istisnayı yeniden fırlat
         raise
-    
-def get_topic_info(url, topic_id=None):
-    """Get topic information and handle redirects"""
-    response = fetch_eksi_page(url)
-    if not response:
-        return None, None, None, None
-    
-    # If we got redirected, update the URL
-    final_url = response.url
-    logger.info(f"Final URL after redirects: {final_url}")
-    
-    # Parse the HTML
-    soup = BeautifulSoup(response.text, 'html.parser')
-    
-    # Extract topic info
-    title_element = soup.select_one('h1#title')
-    if not title_element:
-        logger.error("Could not find topic title - page structure may have changed")
-        return None, None, None, None
-    
-    topic_title = title_element.get_text(strip=True)
-    
-    # If topic_id wasn't provided, try to extract it
-    if not topic_id:
-        topic_id = title_element.get('data-id')
-        if not topic_id:
-            # Try to extract it from the URL
-            match = re.search(r'--(\d+)', final_url)
-            if match:
-                topic_id = match.group(1)
-    
-    # Extract topic slug
-    topic_slug = None
-    if "data-slug" in title_element.attrs:
-        topic_slug = title_element.get('data-slug')
-    else:
-        # Try to extract from URL
-        match = re.search(r'/(.*?)--\d+', final_url)
-        if match:
-            topic_slug = match.group(1)
-    
-    logger.info(f"Found topic: '{topic_title}' (ID: {topic_id})")
-    return topic_title, topic_id, topic_slug, final_url
 
-def create_feed_for_topic(topic_url, topic_id=None, max_pages=3):
-    """Create an RSS feed for entries in an Ekşi Sözlük topic with pagination and correct timezone"""
-    # First get the topic info without date parameter
-    topic_title, topic_id, topic_slug, final_url = get_topic_info(topic_url, topic_id)
+def baslik_bilgisi_al(url, baslik_id=None):
+    """Başlık bilgisini al ve yönlendirmeleri işle"""
+    yanit = eksi_sayfasi_al(url)
+    if not yanit:
+        return None, None, None, None
     
-    if not topic_title or not topic_id:
-        logger.error(f"Failed to get topic info for {topic_url}")
+    # Yönlendirme olduysa, URL'yi güncelle
+    son_url = yanit.url
+    logger.info(f"Yönlendirmeden sonraki son URL: {son_url}")
+    
+    # HTML'i ayrıştır
+    soup = BeautifulSoup(yanit.text, 'html.parser')
+    
+    # Başlık bilgisini çıkar
+    baslik_elemani = soup.select_one('h1#title')
+    if not baslik_elemani:
+        logger.error("Başlık bulunamadı - sayfa yapısı değişmiş olabilir")
+        return None, None, None, None
+    
+    baslik_metni = baslik_elemani.get_text(strip=True)
+    
+    # Başlık ID'si sağlanmadıysa, çıkarmaya çalış
+    if not baslik_id:
+        baslik_id = baslik_elemani.get('data-id')
+        if not baslik_id:
+            # URL'den çıkarmaya çalış
+            eslesme = re.search(r'--(\d+)', son_url)
+            if eslesme:
+                baslik_id = eslesme.group(1)
+    
+    # Başlık slug'ını çıkar
+    baslik_slug = None
+    if "data-slug" in baslik_elemani.attrs:
+        baslik_slug = baslik_elemani.get('data-slug')
+    else:
+        # URL'den çıkarmaya çalış
+        eslesme = re.search(r'/(.*?)--\d+', son_url)
+        if eslesme:
+            baslik_slug = eslesme.group(1)
+    
+    logger.info(f"Başlık bulundu: '{baslik_metni}' (ID: {baslik_id})")
+    return baslik_metni, baslik_id, baslik_slug, son_url
+
+def baslik_icin_feed_olustur(baslik_url, baslik_id=None, max_sayfa=3):
+    """Ekşi Sözlük başlığındaki girdiler için sayfalama ve doğru saat dilimi ile RSS feed'i oluştur"""
+    # Öncelikle tarih parametresi olmadan başlık bilgisini al
+    baslik_metni, baslik_id, baslik_slug, son_url = baslik_bilgisi_al(baslik_url, baslik_id)
+    
+    if not baslik_metni or not baslik_id:
+        logger.error(f"{baslik_url} için başlık bilgisi alınamadı")
         return None
     
-    # Create feed
+    # Feed oluştur
     fg = FeedGenerator()
-    fg.id(final_url)
-    fg.title(f'Ekşi Sözlük - {topic_title}')
-    fg.link(href=final_url, rel='alternate')
-    fg.description(f'New entries for topic: {topic_title}')
+    fg.id(son_url)
+    fg.title(f'Ekşi Sözlük - {baslik_metni}')
+    fg.link(href=son_url, rel='alternate')
+    fg.description(f'Başlık için yeni girdiler: {baslik_metni}')
     fg.language('tr')
     
-    # Add feed level publication date (with Turkish timezone)
-    istanbul_tz = pytz.timezone('Europe/Istanbul')
-    fg.pubDate(datetime.datetime.now(istanbul_tz))
+    # Feed seviyesi yayın tarihi ekle (Türkiye saat dilimi ile)
+    istanbul_saat_dilimi = pytz.timezone('Europe/Istanbul')
+    fg.pubDate(datetime.datetime.now(istanbul_saat_dilimi))
     
-    # Append today's date parameter to the URL
-    today = datetime.datetime.now().strftime('%Y-%m-%d')
+    # URL'ye bugünün tarih parametresini ekle
+    bugun = datetime.datetime.now().strftime('%Y-%m-%d')
     
-    # Process multiple pages
-    entries_added = 0
-    use_date_param = True  # Flag to determine if we should use date parameter
+    # Birden fazla sayfayı işle
+    eklenen_girdi_sayisi = 0
     
-    for page in range(1, max_pages + 1):
-        # Construct URL with date and page parameters
-        if use_date_param:
-            if '?' in final_url:
-                page_url = f"{final_url}&day={today}"
-            else:
-                page_url = f"{final_url}?day={today}"
-                
-            # Add page parameter if not the first page
-            if page > 1:
-                page_url = f"{page_url}&p={page}"
-            
-            logger.info(f"Fetching page {page} with date parameter: {page_url}")
+    for sayfa in range(1, max_sayfa + 1):
+        # Tarih ve sayfa parametreleriyle URL oluştur
+        if '?' in son_url:
+            sayfa_url = f"{son_url}&day={bugun}"
         else:
-            # Use the URL without date parameter if there were no entries for today
-            page_url = final_url
-            if page > 1:
-                if '?' in page_url:
-                    page_url = f"{page_url}&p={page}"
-                else:
-                    page_url = f"{page_url}?p={page}"
-            logger.info(f"Fetching page {page} without date parameter: {page_url}")
+            sayfa_url = f"{son_url}?day={bugun}"
+            
+        # İlk sayfa değilse sayfa parametresini ekle
+        if sayfa > 1:
+            sayfa_url = f"{sayfa_url}&p={sayfa}"
         
-        # Fetch the page
+        logger.info(f"Sayfa {sayfa} tarih parametresiyle alınıyor: {sayfa_url}")
+        
+        # Sayfayı al
         try:
-            response = fetch_eksi_page(page_url)
-            if not response:
-                if use_date_param and page == 1:
-                    # If first attempt with date parameter fails, try without date
-                    logger.info("No entries found for today, falling back to most recent entries")
-                    use_date_param = False
-                    page = 0  # Reset page counter to try again from page 1
-                    continue
+            yanit = eksi_sayfasi_al(sayfa_url)
+            if not yanit:
                 break
         except Exception as e:
-            if use_date_param and page == 1:
-                # If first attempt with date parameter fails, try without date
-                logger.info(f"No entries found for today ({e}), falling back to most recent entries")
-                use_date_param = False
-                page = 0  # Reset page counter to try again from page 1
-                continue
-            logger.error(f"Error fetching page: {e}")
-            break
+            logger.warning(f"Bugünün tarihi ({bugun}) için girdi bulunamadı: {e}")
+            
+            # Geri dönmek yerine, özel bir "bugün girdi yok" girdisi ekle
+            fe = fg.add_entry()
+            fe.id(f"{son_url}#bugun-girdi-yok-{bugun}")
+            fe.title("Bilgilendirme")
+            fe.link(href=son_url)
+            fe.author(name="Ekşi RSS")
+            fe.content(f"Bugün ({bugun}) için bu başlıkta herhangi bir entry bulunmamaktadır.", type='html')
+            fe.published(datetime.datetime.now(istanbul_saat_dilimi))
+            
+            # Sadece bilgi girdisiyle feed'i döndür
+            return fg
         
-        # Parse the HTML
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # HTML'i ayrıştır
+        soup = BeautifulSoup(yanit.text, 'html.parser')
         
-        # Extract entries
-        entries = soup.select('ul#entry-item-list > li')
-        if not entries:
-            # No more entries found, stop pagination
-            if use_date_param and page == 1:
-                # If first attempt with date parameter returns no entries, try without date
-                logger.info("No entries found for today, falling back to most recent entries")
-                use_date_param = False
-                page = 0  # Reset page counter to try again from page 1
-                continue
+        # Girdileri çıkar
+        girdiler = soup.select('ul#entry-item-list > li')
+        if not girdiler:
+            # Başka girdi bulunamadı, sayfalamayı durdur
+            if sayfa == 1:
+                # Özel bir "bugün girdi yok" girdisi ekle
+                fe = fg.add_entry()
+                fe.id(f"{son_url}#bugun-girdi-yok-{bugun}")
+                fe.title("Bilgilendirme")
+                fe.link(href=son_url)
+                fe.author(name="Ekşi RSS")
+                fe.content(f"Bugün ({bugun}) için bu başlıkta herhangi bir entry bulunmamaktadır.", type='html')
+                fe.published(datetime.datetime.now(istanbul_saat_dilimi))
             break
             
-        logger.info(f"Found {len(entries)} entries on page {page} for topic: {topic_title}")
+        logger.info(f"Sayfa {sayfa}'da {len(girdiler)} girdi bulundu, başlık: {baslik_metni}")
         
-        # Process entries (rest of the code remains the same)
-        for entry in entries:
+        # Girdileri işle (kodun geri kalanı aynı kalır)
+        for girdi in girdiler:
             try:
-                entry_id = entry.get('data-id')
-                if not entry_id:
+                girdi_id = girdi.get('data-id')
+                if not girdi_id:
                     continue
                     
-                author = entry.get('data-author')
-                content_element = entry.select_one('div.content')
-                if not content_element:
+                yazar = girdi.get('data-author')
+                icerik_elemani = girdi.select_one('div.content')
+                if not icerik_elemani:
                     continue
                     
-                content = content_element.decode_contents()
-                date_element = entry.select_one('div.info a.entry-date')
-                if not date_element:
+                icerik = icerik_elemani.decode_contents()
+                tarih_elemani = girdi.select_one('div.info a.entry-date')
+                if not tarih_elemani:
                     continue
                     
-                date_text = date_element.get_text(strip=True)
-                permalink = date_element.get('href')
+                tarih_metni = tarih_elemani.get_text(strip=True)
+                kalici_baglanti = tarih_elemani.get('href')
                 
-                # Create entry in feed
+                # Feed'de girdi oluştur
                 fe = fg.add_entry()
-                fe.id(f'https://eksisozluk.com{permalink}')
+                fe.id(f'https://eksisozluk.com{kalici_baglanti}')
                 
-                # Use just the author name as the title
-                fe.title(author)
+                # Başlık olarak sadece yazar adını kullan
+                fe.title(yazar)
                 
-                fe.link(href=f'https://eksisozluk.com{permalink}')
-                fe.author(name=author)
-                fe.content(content, type='html')
+                fe.link(href=f'https://eksisozluk.com{kalici_baglanti}')
+                fe.author(name=yazar)
+                fe.content(icerik, type='html')
                 
-                # Parse date and make it timezone-aware with Turkish timezone
-                date_match = re.search(r'(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2})', date_text)
-                if date_match:
-                    date_str = date_match.group(1)
+                # Tarihi ayrıştır ve Türkiye saat dilimi ile saat dilimi bilgisini ekle
+                tarih_eslesme = re.search(r'(\d{2}\.\d{2}\.\d{4} \d{2}:\d{2})', tarih_metni)
+                if tarih_eslesme:
+                    tarih_str = tarih_eslesme.group(1)
                     try:
-                        # Parse date and make it timezone-aware with Turkish timezone
-                        entry_date = datetime.datetime.strptime(date_str, '%d.%m.%Y %H:%M')
-                        entry_date = istanbul_tz.localize(entry_date)
-                        fe.published(entry_date)
+                        # Tarihi ayrıştır ve Türkiye saat dilimi ile saat dilimi bilgisini ekle
+                        girdi_tarihi = datetime.datetime.strptime(tarih_str, '%d.%m.%Y %H:%M')
+                        girdi_tarihi = istanbul_saat_dilimi.localize(girdi_tarihi)
+                        fe.published(girdi_tarihi)
                     except ValueError as e:
-                        logger.warning(f"Error parsing date '{date_str}': {e}")
-                        # Use current time with Turkish timezone
-                        fe.published(datetime.datetime.now(istanbul_tz))
+                        logger.warning(f"Tarih ayrıştırma hatası '{tarih_str}': {e}")
+                        # Türkiye saat dilimi ile şu anki zamanı kullan
+                        fe.published(datetime.datetime.now(istanbul_saat_dilimi))
                 else:
-                    # Use current time with Turkish timezone
-                    fe.published(datetime.datetime.now(istanbul_tz))
+                    # Türkiye saat dilimi ile şu anki zamanı kullan
+                    fe.published(datetime.datetime.now(istanbul_saat_dilimi))
                 
-                entries_added += 1
+                eklenen_girdi_sayisi += 1
             except Exception as e:
-                logger.error(f"Error processing entry: {e}")
+                logger.error(f"Girdi işlenirken hata oluştu: {e}")
                 
-        # Check if we should continue to the next page
-        # If this page had fewer entries than expected, don't fetch more pages
-        if len(entries) < 10:  # Assuming each page has around 10 entries
+        # Sonraki sayfaya devam edip etmememiz gerektiğini kontrol et
+        # Bu sayfada beklenenden daha az girdi varsa, daha fazla sayfa alma
+        if len(girdiler) < 10:  # Her sayfada yaklaşık 10 girdi olduğunu varsayarak
             break
     
-    logger.info(f"Added {entries_added} entries in total for topic: {topic_title}")
+    logger.info(f"Toplam {eklenen_girdi_sayisi} girdi eklendi, başlık: {baslik_metni}")
     return fg
 
-@app.route('/')
-def index():
-    """Home page showing available feeds"""
-    subscriptions = load_subscriptions()
-    return render_template('index.html', subscriptions=subscriptions)
+@uygulama.route('/')
+def anasayfa():
+    """Mevcut feed'leri gösteren ana sayfa"""
+    abonelikler = abonelikleri_yukle()
+    return render_template('index.html', abonelikler=abonelikler)
 
-@app.route('/add_feed', methods=['POST'])
-def add_feed():
-    """Add a new topic feed"""
-    topic_input = request.form.get('topic', '')
-    if not topic_input:
-        return redirect(url_for('index'))
+@uygulama.route('/feed_ekle', methods=['POST'])
+def feed_ekle():
+    """Yeni bir başlık feed'i ekle"""
+    baslik_girdi = request.form.get('baslik', '')
+    if not baslik_girdi:
+        return redirect(url_for('anasayfa'))
     
-    # Parse the topic URL/identifier
-    topic_url, topic_id = parse_topic_url(topic_input)
+    # Başlık URL/tanımlayıcısını ayrıştır
+    baslik_url, baslik_id = baslik_url_ayrıstir(baslik_girdi)
     
-    # Get the topic info
-    topic_title, topic_id, topic_slug, final_url = get_topic_info(topic_url, topic_id)
+    # Başlık bilgisini al
+    baslik_metni, baslik_id, baslik_slug, son_url = baslik_bilgisi_al(baslik_url, baslik_id)
     
-    if not topic_id or not topic_title:
-        return render_template('error.html', message=f"Could not find topic: {topic_input}")
+    if not baslik_id or not baslik_metni:
+        return render_template('error.html', mesaj=f"Başlık bulunamadı: {baslik_girdi}")
     
-    # Add to subscriptions if not already there
-    subscriptions = load_subscriptions()
-    for sub in subscriptions:
-        if sub.get('id') == topic_id:
-            return redirect(url_for('index'))
+    # Zaten yoksa aboneliklere ekle
+    abonelikler = abonelikleri_yukle()
+    for abone in abonelikler:
+        if abone.get('id') == baslik_id:
+            return redirect(url_for('anasayfa'))
     
-    subscriptions.append({
-        'id': topic_id,
-        'title': topic_title,
-        'url': final_url,
-        'slug': topic_slug,
-        'added': datetime.datetime.now().isoformat()
+    abonelikler.append({
+        'id': baslik_id,
+        'baslik': baslik_metni,
+        'url': son_url,
+        'slug': baslik_slug,
+        'ekleme_tarihi': datetime.datetime.now().isoformat()
     })
     
-    save_subscriptions(subscriptions)
-    return redirect(url_for('index'))
+    abonelikleri_kaydet(abonelikler)
+    return redirect(url_for('anasayfa'))
 
-@app.route('/remove_feed/<topic_id>')
-def remove_feed(topic_id):
-    """Remove a topic feed"""
-    subscriptions = load_subscriptions()
-    subscriptions = [sub for sub in subscriptions if sub.get('id') != topic_id]
-    save_subscriptions(subscriptions)
-    return redirect(url_for('index'))
+@uygulama.route('/feed_kaldir/<baslik_id>')
+def feed_kaldir(baslik_id):
+    """Bir başlık feed'ini kaldır"""
+    abonelikler = abonelikleri_yukle()
+    abonelikler = [abone for abone in abonelikler if abone.get('id') != baslik_id]
+    abonelikleri_kaydet(abonelikler)
+    return redirect(url_for('anasayfa'))
 
-@app.route('/feed/topic/<topic_id>.xml')
-def feed_by_id(topic_id):
-    """Serve an RSS feed for a specific topic by ID"""
-    # Check if this is a known subscription
-    subscriptions = load_subscriptions()
-    topic_url = None
+@uygulama.route('/feed/baslik/<baslik_id>.xml')
+def id_ile_feed(baslik_id):
+    """ID ile belirli bir başlık için RSS feed'i sunar"""
+    # Bunun bilinen bir abonelik olup olmadığını kontrol et
+    abonelikler = abonelikleri_yukle()
+    baslik_url = None
     
-    for sub in subscriptions:
-        if sub.get('id') == topic_id:
-            topic_url = sub.get('url')
+    for abone in abonelikler:
+        if abone.get('id') == baslik_id:
+            baslik_url = abone.get('url')
             break
     
-    if not topic_url:
-        topic_url = f"https://eksisozluk.com/baslik/{topic_id}"
+    if not baslik_url:
+        baslik_url = f"https://eksisozluk.com/baslik/{baslik_id}"
     
-    # Create feed with pagination (get up to 3 pages)
-    fg = create_feed_for_topic(topic_url, topic_id, max_pages=3)
+    # Sayfalama ile feed oluştur (en fazla 3 sayfa al)
+    fg = baslik_icin_feed_olustur(baslik_url, baslik_id, max_sayfa=3)
     
     if not fg:
-        return "Failed to generate feed", 500
+        return "Feed oluşturulamadı", 500
     
-    # Generate RSS
+    # RSS oluştur
     rss_feed = fg.rss_str(pretty=True)
     
     return Response(rss_feed, mimetype='application/xml')
 
-@app.route('/feed/search/<path:search_term>.xml')
-def feed_by_search(search_term):
-    """Serve an RSS feed for a specific search term"""
-    encoded_term = quote(search_term)
-    topic_url = f"https://eksisozluk.com/?q={encoded_term}"
+@uygulama.route('/feed/arama/<path:arama_terimi>.xml')
+def arama_ile_feed(arama_terimi):
+    """Belirli bir arama terimi için RSS feed'i sunar"""
+    kodlanmis_terim = quote(arama_terimi)
+    baslik_url = f"https://eksisozluk.com/?q={kodlanmis_terim}"
     
-    # Create feed
-    fg = create_feed_for_topic(topic_url)
+    # Feed oluştur
+    fg = baslik_icin_feed_olustur(baslik_url)
     
     if not fg:
-        return "Failed to generate feed", 500
+        return "Feed oluşturulamadı", 500
     
-    # Generate RSS
+    # RSS oluştur
     rss_feed = fg.rss_str(pretty=True)
     
     return Response(rss_feed, mimetype='application/xml')
 
-@app.route('/all.xml')
-def all_feeds():
-    """Serve a combined feed of all subscribed topics"""
-    subscriptions = load_subscriptions()
+@uygulama.route('/hepsi.xml')
+def tum_feedler():
+    """Tüm abone olunan başlıkların birleştirilmiş feed'ini sunar"""
+    abonelikler = abonelikleri_yukle()
     
-    # Create combined feed
+    # Birleştirilmiş feed oluştur
     fg = FeedGenerator()
     fg.id(request.url)
-    fg.title('Ekşi - All Subscribed Topics')
+    fg.title('Ekşi - Tüm Abone Olunan Başlıklar')
     fg.link(href=request.url, rel='self')
-    fg.description('Combined feed of all subscribed Ekşi Sözlük topics')
+    fg.description('Tüm abone olunan Ekşi Sözlük başlıklarının birleştirilmiş feed\'i')
     fg.language('tr')
     
-    # Add feed level publication date (with timezone)
+    # Feed seviyesi yayın tarihi ekle (saat dilimi ile)
     fg.pubDate(datetime.datetime.now(pytz.UTC))
     
-    # Limit to the most recent 10 topics for performance
-    for sub in subscriptions[:10]:
-        topic_id = sub.get('id')
-        topic_url = sub.get('url')
+    # Performans için en son 10 başlıkla sınırla
+    for abone in abonelikler[:10]:
+        baslik_id = abone.get('id')
+        baslik_url = abone.get('url')
         
-        if topic_url:
-            topic_feed = create_feed_for_topic(topic_url, topic_id)
-            if topic_feed:
-                # Add entries from this feed to the combined feed
-                for entry in topic_feed.entry():
-                    fg.add_entry(entry)
+        if baslik_url:
+            baslik_feed = baslik_icin_feed_olustur(baslik_url, baslik_id)
+            if baslik_feed:
+                # Bu feed'den girdileri birleştirilmiş feed'e ekle
+                for girdi in baslik_feed.entry():
+                    fg.add_entry(girdi)
     
-    # Generate RSS
+    # RSS oluştur
     rss_feed = fg.rss_str(pretty=True)
     
     return Response(rss_feed, mimetype='application/xml')
 
-# Create template files
-def create_template_files():
+# Şablon dosyalarını oluştur
+def sablon_dosyalari_olustur():
     if not os.path.exists('templates'):
         os.makedirs('templates')
         
-    index_template = '''
+    index_sablonu = '''
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Ekşi Sözlük RSS Service</title>
+        <title>Ekşi Sözlük RSS Servisi</title>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
@@ -439,45 +430,45 @@ def create_template_files():
         </style>
     </head>
     <body>
-        <h1>Ekşi Sözlük RSS Service</h1>
+        <h1>Ekşi Sözlük RSS Servisi</h1>
         
-        <form action="/add_feed" method="post">
-            <h3>Add a New Feed</h3>
-            <input type="text" name="topic" placeholder="Topic URL, ID, or search term" required>
-            <button type="submit">Add</button>
+        <form action="/feed_ekle" method="post">
+            <h3>Yeni Feed Ekle</h3>
+            <input type="text" name="baslik" placeholder="Başlık URL'si, ID'si veya arama terimi" required>
+            <button type="submit">Ekle</button>
         </form>
         
         <div class="combined-feed">
-            <h3>Combined Feed</h3>
-            <p>Subscribe to all topics in one feed: <a href="/all.xml">/all.xml</a></p>
+            <h3>Birleştirilmiş Feed</h3>
+            <p>Tüm başlıkları tek bir feed'de takip et: <a href="/hepsi.xml">/hepsi.xml</a></p>
         </div>
         
         <div class="feed-list">
-            <h3>Subscribed Topics</h3>
-            {% if subscriptions %}
-                {% for sub in subscriptions %}
+            <h3>Abone Olunan Başlıklar</h3>
+            {% if abonelikler %}
+                {% for abone in abonelikler %}
                     <div class="feed-item">
-                        <div class="feed-title">{{ sub.title }}</div>
-                        <div class="feed-url">{{ sub.url }}</div>
+                        <div class="feed-title">{{ abone.baslik }}</div>
+                        <div class="feed-url">{{ abone.url }}</div>
                         <div class="feed-actions">
-                            <a href="/feed/topic/{{ sub.id }}.xml">View RSS</a> | 
-                            <a href="/remove_feed/{{ sub.id }}">Remove</a>
+                            <a href="/feed/baslik/{{ abone.id }}.xml">RSS Görüntüle</a> | 
+                            <a href="/feed_kaldir/{{ abone.id }}">Kaldır</a>
                         </div>
                     </div>
                 {% endfor %}
             {% else %}
-                <p>No subscriptions yet. Add some topics!</p>
+                <p>Henüz abonelik yok. Bazı başlıklar ekleyin!</p>
             {% endif %}
         </div>
     </body>
     </html>
     '''
     
-    error_template = '''
+    hata_sablonu = '''
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Error - Ekşi Sözlük RSS Service</title>
+        <title>Hata - Ekşi Sözlük RSS Servisi</title>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
@@ -488,29 +479,29 @@ def create_template_files():
         </style>
     </head>
     <body>
-        <h1>Error</h1>
+        <h1>Hata</h1>
         <div class="error-box">
-            <p>{{ message }}</p>
+            <p>{{ mesaj }}</p>
         </div>
-        <p><a href="/">Back to home</a></p>
+        <p><a href="/">Ana sayfaya dön</a></p>
     </body>
     </html>
     '''
     
-    # Write the template files
+    # Şablon dosyalarını yaz
     with open(os.path.join('templates', 'index.html'), 'w', encoding='utf-8') as f:
-        f.write(index_template)
+        f.write(index_sablonu)
     
     with open(os.path.join('templates', 'error.html'), 'w', encoding='utf-8') as f:
-        f.write(error_template)
+        f.write(hata_sablonu)
 
 if __name__ == '__main__':
-    # Create subscription file if it doesn't exist
-    if not os.path.exists(SUBSCRIPTIONS_FILE):
-        save_subscriptions([])
+    # Abonelik dosyası yoksa oluştur
+    if not os.path.exists(ABONELIKLER_DOSYASI):
+        abonelikleri_kaydet([])
     
-    # Create template files
-    create_template_files()
+    # Şablon dosyalarını oluştur
+    sablon_dosyalari_olustur()
     
-    # Run the app
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Uygulamayı çalıştır
+    uygulama.run(host='0.0.0.0', port=5000, debug=False)
