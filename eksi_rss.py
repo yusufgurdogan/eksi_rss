@@ -11,6 +11,10 @@ import json
 import logging
 from urllib.parse import quote
 from flask_caching import Cache
+from dotenv import load_dotenv
+
+# .env dosyasını yükle
+load_dotenv()
 
 # Günlük kaydını yapılandır
 logging.basicConfig(
@@ -219,7 +223,7 @@ def baslik_icin_feed_olustur(baslik_url, baslik_id=None, max_sayfa=3):
             
         logger.info(f"Sayfa {sayfa}'da {len(girdiler)} girdi bulundu, başlık: {baslik_metni}")
         
-        # Girdileri işle (kodun geri kalanı aynı kalır)
+        # Girdileri işle
         for girdi in girdiler:
             try:
                 girdi_id = girdi.get('data-id')
@@ -496,6 +500,10 @@ def sablon_dosyalari_olustur():
         f.write(hata_sablonu)
 
 if __name__ == '__main__':
+    # .env dosyasından host ve port değerlerini al, varsayılan değerler sağla
+    host = os.getenv('HOST', '0.0.0.0')
+    port = int(os.getenv('PORT', 5000))
+    
     # Abonelik dosyası yoksa oluştur
     if not os.path.exists(ABONELIKLER_DOSYASI):
         abonelikleri_kaydet([])
@@ -504,4 +512,4 @@ if __name__ == '__main__':
     sablon_dosyalari_olustur()
     
     # Uygulamayı çalıştır
-    uygulama.run(host='0.0.0.0', port=5000, debug=False)
+    uygulama.run(host=host, port=port, debug=False)

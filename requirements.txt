@@ -1,0 +1,7 @@
+flask
+cloudscraper
+beautifulsoup4
+feedgen
+pytz
+python-dotenv
+flask-caching

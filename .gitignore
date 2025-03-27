@@ -1,2 +1,24 @@
-*.html
-*.json
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+*.env
+
+# Uygulama verileri
+abonelikler.json
+
+# IDE dosyaları
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Log dosyaları
+*.log
+/templates
+subscriptions.json
